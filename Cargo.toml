@@ -1,0 +1,16 @@
+[package]
+# Renaming this package renames the binary, the release assets, and the
+# installed completion files. See "Make it yours" in README.md.
+name = "greet"
+version = "0.1.0"
+edition = "2024"
+description = "A Rust CLI starter template with releases, installer, and shell completions"
+# Point this at your own repository. `greet upgrade` and the installer read it
+# to find releases; both fail with a clear error while it is still OWNER/REPO.
+repository = "https://github.com/OWNER/REPO"
+
+[dependencies]
+usage = { package = "usage-rs", version = "6", features = ["completions"] }
+
+[dev-dependencies]
+usage = { package = "usage-rs", version = "6", features = ["test"] }

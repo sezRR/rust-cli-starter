@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      # The package name in Cargo.toml drives the binary and asset names.
+      package-name: ${{ steps.package.outputs.name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check release inputs
+        id: package
+        shell: bash
+        run: |
+          cargo check --locked
+          metadata="$(cargo metadata --locked --no-deps --format-version 1)"
+          package_name="$(jq -r '.packages[0].name' <<< "$metadata")"
+          package_version="$(jq -r '.packages[0].version' <<< "$metadata")"
+          if [[ "$GITHUB_REF_NAME" != "v$package_version" ]]; then
+            printf 'Tag %s does not match Cargo package version %s.\n' "$GITHUB_REF_NAME" "$package_version" >&2
+            exit 1
+          fi
+          printf 'name=%s\n' "$package_name" >> "$GITHUB_OUTPUT"
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_is_draft="$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null || true)"
+          if [[ -z "$release_is_draft" ]]; then
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+          elif [[ "$release_is_draft" != true ]]; then
+            printf 'Release %s is already published. Refusing to replace its assets.\n' "$GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+  upload-assets:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            build-tool: cross
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            build-tool: cross
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            build-tool: cross
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            build-tool: cross
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            build-tool: cross
+          - target: armv7-unknown-linux-musleabihf
+            os: ubuntu-latest
+            build-tool: cross
+          - target: aarch64-linux-android
+            os: ubuntu-latest
+            build-tool: cargo
+          - target: armv7-linux-androideabi
+            os: ubuntu-latest
+            build-tool: cargo
+          - target: i686-linux-android
+            os: ubuntu-latest
+            build-tool: cargo
+          - target: x86_64-linux-android
+            os: ubuntu-latest
+            build-tool: cargo
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            build-tool: cargo
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            build-tool: cargo
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Android cross-compilation tools
+        if: contains(matrix.target, 'android')
+        uses: taiki-e/setup-cross-toolchain-action@12b7ad4acfa95a1476779d6c06699b96ec1691f8 # v1.42.0
+        with:
+          target: ${{ matrix.target }}
+          runner: none
+      - name: Build and upload binary
+        uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1.30.2
+        with:
+          bin: ${{ needs.create-release.outputs.package-name }}
+          target: ${{ matrix.target }}
+          build-tool: ${{ matrix.build-tool }}
+          locked: true
+          checksum: sha256
+
+  publish-release:
+    needs: upload-assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
